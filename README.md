@@ -23,7 +23,7 @@ Make sure you have Python 3.8+ installed, then install the required packages:
 ```bash
 pip install -r requirements.txt
 ```
-###3. Train the Models
+### 3. Train the Models
 Audio Model:
 ```bash
 python train_audio.py
