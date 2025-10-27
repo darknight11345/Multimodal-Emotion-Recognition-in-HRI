@@ -23,7 +23,6 @@ Make sure you have Python 3.8+ installed, then install the required packages:
 ```bash
 pip install -r requirements.txt
 ```
-The requirements include tensorflow, keras, opencv-python, librosa, sounddevice, pydub, noisereduce, and tkinter.
 ###3. Train the Models
 Audio Model:
 ```bash
