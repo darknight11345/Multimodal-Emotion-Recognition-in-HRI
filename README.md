@@ -16,8 +16,7 @@ Once the models are trained, they can be used in the respective **realtime_audio
 
 ### 1. Clone the Repository
 ```bash
-git clone https://github.com/yourusername/your-repo-name.git
-cd your-repo-name
+git clone https://github.com/darknight11345/Multimodal-Emotion-Recognition-in-HRI.git
 ````
 ### 2. Install Dependencies
 Make sure you have Python 3.8+ installed, then install the required packages:
