@@ -25,9 +25,7 @@ pip install -r requirements.txt
 ```
 ### 3. Train the Models
 Audio Model:
-```bash
-python train_audio.py
-```
+The training of the audio emotion recognition model was carried out using the Jupyter notebook file (train_audio.ipynb). The notebook can be executed either interactively within the Jupyter environment or directly from the terminal.
 Video Model:
 ```bash
 python train_video.py
@@ -43,7 +41,7 @@ python realtime_video.py
 ```
 ###5. Run Real-Time Multimodal Prediction with GUI
 ```bash
-python GUI_latefusion.py
+python GUI+latefusion.py
 ```
 The GUI will open, capture live webcam and microphone inputs, and display dynamic emotion predictions with progress bars and labels.
 
