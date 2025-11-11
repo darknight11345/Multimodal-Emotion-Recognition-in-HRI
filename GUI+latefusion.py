@@ -25,6 +25,8 @@ AUDIO_FRAME = 2048
 
 VIDEO_TARGET_SIZE = (48, 48)
 FUSION_WEIGHTS = (0.6, 0.4)  # (video_weight, audio_weight)
+audio_threshold = 0.01
+
 
 # -------------------------------
 # Load pretrained models
@@ -34,6 +36,11 @@ VIDEO_JSON_PATH = r"D:\ulm\Course Cogsys\Sem 4\AI for Auto\Realtime_video\emotio
 VIDEO_WEIGHTS_PATH = r"D:\ulm\Course Cogsys\Sem 4\AI for Auto\Realtime_video\emotiondetector.h5"
 AUDIO_JSON_PATH = r'D:\ulm\Course Cogsys\Sem 4\AI for Auto\Model\model17082025.json'
 AUDIO_WEIGHTS_PATH = r'D:\ulm\Course Cogsys\Sem 4\AI for Auto\Model\model17082025.weights.h5'
+
+
+face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+
+
 
 print("Loading models...")
 with open(VIDEO_JSON_PATH, "r") as f:
@@ -55,6 +62,16 @@ video_labels = {0: 'angry', 1: 'disgust', 2: 'fear', 3: 'happy', 4: 'neutral', 5
 audio_labels = {0: 'neutral', 1: 'calm', 2: 'happy', 3: 'sad', 4: 'angry', 5: 'fearful', 6: 'disgust', 7: 'surprise'}
 # use list of video labels (order) for GUI bars
 labels = [video_labels[i] for i in range(len(video_labels))]
+
+def detect_face(frame):
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5)
+    if len(faces) > 0:
+        # pick the first detected face
+        x, y, w, h = faces[0]
+        return True, (x, y, w, h)
+    return False, None
+
 
 # -------------------------------
 # Audio preprocessing
@@ -82,7 +99,7 @@ def preprocess_audio_array(arr: np.ndarray, sr: int = AUDIO_RATE,
     except Exception:
         arr_nr = arr2
 
-    # 3) compute features -- follow the approach in your training pipeline
+    # 3) compute features
     f1 = librosa.feature.rms(y=arr_nr, frame_length=frame_length, hop_length=hop_length, center=True).T
     f2 = librosa.feature.zero_crossing_rate(arr_nr, frame_length=frame_length, hop_length=hop_length, center=True).T
     f3 = librosa.feature.mfcc(y=arr_nr, sr=sr, n_mfcc=13, hop_length=hop_length).T
@@ -104,7 +121,10 @@ def preprocess_audio_array(arr: np.ndarray, sr: int = AUDIO_RATE,
             X = np.concatenate((f1s, f2s, f3s), axis=1)
 
     X = np.expand_dims(X, axis=0)  # (1, timesteps, features)
-    return X.astype('float32')
+    # Silence detection based on average RMS energy
+    mean_rms = np.mean(f1)  # f1 is already frame-wise RMS values
+    silent = mean_rms < audio_threshold
+    return X.astype('float32'),silent
 
 # -------------------------------
 # Fusion mapping
@@ -132,8 +152,17 @@ def map_audio_to_video_labels(pred_audio_raw):
         mapped = mapped / s
     return mapped
 
-def late_fusion(pred_video, pred_audio_mapped, w_video=FUSION_WEIGHTS[0], w_audio=FUSION_WEIGHTS[1]):
+def late_fusion(pred_video, pred_audio_mapped,silent_detect, w_video=FUSION_WEIGHTS[0], w_audio=FUSION_WEIGHTS[1]):
+    if silent_detect:
+        w_audio=0.05
+        w_video=0.95
+    else:
+        w_audio=0.9
+        w_video=0.1
+
     fused = w_video * pred_video + w_audio * pred_audio_mapped
+    print(pred_video,pred_audio_mapped,fused)
+    
     # normalize
     s = fused.sum(axis=1, keepdims=True)
     s[s == 0] = 1.0
@@ -147,6 +176,7 @@ class AudioWorker(threading.Thread):
     def __init__(self):
         super().__init__(daemon=True)
         self.latest_audio_mapped = np.zeros((1, len(labels)), dtype='float32')
+        self.audio_silence_detection = 0
         self.running = True
 
     def run(self):
@@ -157,10 +187,11 @@ class AudioWorker(threading.Thread):
                 sd.wait()
                 audio = recording.flatten()
                 # preprocess & predict
-                X = preprocess_audio_array(audio, sr=AUDIO_RATE)
+                X,silent  = preprocess_audio_array(audio, sr=AUDIO_RATE)
                 pred_audio_raw = audio_model.predict(X, verbose=0)  # (1,8)
                 mapped = map_audio_to_video_labels(pred_audio_raw)  # (1,7)
                 self.latest_audio_mapped = mapped
+                self.audio_silence_detection = silent
             except Exception as e:
                 print("Audio worker error:", e)
                 time.sleep(0.1)
@@ -220,32 +251,53 @@ class FusionApp:
         ret, frame = self.cap.read()
         if ret:
             # preprocess face
-            try:
-                face = cv2.resize(frame, VIDEO_TARGET_SIZE)
-                face_gray = cv2.cvtColor(face, cv2.COLOR_BGR2GRAY).astype('float32') / 255.0
-                face_in = np.expand_dims(face_gray, axis=(0, -1))  # (1,48,48,1)
-                pred_video = video_model.predict(face_in, verbose=0)  # (1,7)
-                self.latest_video_pred = pred_video.astype('float32')
-            except Exception as e:
-                # fallback: keep previous
-                print("Video preprocessing/pred error:", e)
-                pred_video = self.latest_video_pred
-
+            # detect face first
+            face_detected,face_coords  = detect_face(frame)
+            if face_detected:
+                try:
+                    x, y, w, h = face_coords
+                    # Draw bounding box on the frame
+                    cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)   
+                    # Crop and preprocess face for video model
+                    face_roi = frame[y:y+h, x:x+w]  
+                    face = cv2.resize(face_roi, VIDEO_TARGET_SIZE)
+                    face_gray = cv2.cvtColor(face, cv2.COLOR_BGR2GRAY).astype('float32') / 255.0
+                    face_in = np.expand_dims(face_gray, axis=(0, -1))  # (1,48,48,1)
+                    pred_video = video_model.predict(face_in, verbose=0)  # (1,7)
+                    self.latest_video_pred = pred_video.astype('float32')
+                except Exception as e:
+                    # fallback: keep previous
+                    print("Video preprocessing/pred error:", e)
+                    pred_video = self.latest_video_pred
+            else:
+                pred_video = np.zeros((1, len(labels)), dtype='float32')
             # fuse with latest audio
             audio_mapped = self.audio_worker.latest_audio_mapped
-            fused = late_fusion(self.latest_video_pred, audio_mapped)
+            silent_detect=self.audio_worker.audio_silence_detection
+            # determine fused prediction
+            if face_detected:
+                # normal fusion (consider audio silence)
+                fused = late_fusion(self.latest_video_pred, audio_mapped, silent_detect)
+            elif not face_detected and not silent_detect:
+                fused = late_fusion(self.latest_video_pred,audio_mapped, silent_detect)
+            else:
+                # both missing: unknown
+                fused = np.zeros((1, len(labels)), dtype='float32')
 
             # update GUI bars
             for i, label in enumerate(labels):
                 value = float(fused[0][i]) * 100.0
                 self.progress_bars[label]["value"] = value
-
-            final_label = labels[int(np.argmax(fused))]
-            self.emotion_var.set(f"Fused Emotion: {final_label} ({(100*np.max(fused)): .1f}%)")
-
+            if fused.sum() > 0:
+                final_label = labels[int(np.argmax(fused))]
+                self.emotion_var.set(f"Fused Emotion: {final_label} ({(100*np.max(fused)): .1f}%)")
+            else:
+                final_label = "Unknown"
+                self.emotion_var.set("Fused Emotion: Unknown")
             # show a small OpenCV window with the camera and fused label
             disp = frame.copy()
             cv2.putText(disp, f"{final_label}", (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,0), 2)
+            
             cv2.imshow("Camera (press q to quit)", disp)
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 self.on_close()
